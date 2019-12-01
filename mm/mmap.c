@@ -687,22 +687,8 @@ static __always_inline void __vma_unlink_common(struct mm_struct *mm,
 						bool has_prev,
 						struct vm_area_struct *ignore)
 {
-	struct vm_area_struct *next;
-
 	vma_rb_erase_ignore(vma, mm, ignore);
-	next = vma->vm_next;
-	if (has_prev)
-		prev->vm_next = next;
-	else {
-		prev = vma->vm_prev;
-		if (prev)
-			prev->vm_next = next;
-		else
-			mm->mmap = next;
-	}
-	if (next)
-		next->vm_prev = prev;
-
+	__vma_unlink_list(mm, vma);
 	/* Kill the cache */
 	vmacache_invalidate(mm);
 }
