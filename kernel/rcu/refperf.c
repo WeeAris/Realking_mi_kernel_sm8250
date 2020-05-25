@@ -57,17 +57,8 @@ MODULE_PARM_DESC(perf_type, "Type of test (rcu, srcu, refcnt, rwsem, rwlock.");
 
 torture_param(int, verbose, 0, "Enable verbose debugging printk()s");
 
-// Wait until there are multiple CPUs before starting test.
-torture_param(int, holdoff, IS_BUILTIN(CONFIG_RCU_REF_PERF_TEST) ? 10 : 0,
-	      "Holdoff time before test start (s)");
-// Number of loops per experiment, all readers execute operations concurrently.
+// Number of loops per experiment, all readers execute an operation concurrently
 torture_param(long, loops, 10000000, "Number of loops per experiment.");
-// Number of readers, with -1 defaulting to about 75% of the CPUs.
-torture_param(int, nreaders, -1, "Number of readers, -1 for 75% of CPUs.");
-// Number of runs.
-torture_param(int, nruns, 30, "Number of experiments to run.");
-// Reader delay in nanoseconds, 0 for no delay.
-torture_param(int, readdelay, 0, "Read-side delay in nanoseconds.");
 
 #ifdef MODULE
 # define REFPERF_SHUTDOWN 0
@@ -83,6 +74,12 @@ struct reader_task {
 	atomic_t start;
 	wait_queue_head_t wq;
 	u64 last_duration_ns;
+
+	// The average latency When 1..<this reader> are concurrently
+	// running an experiment. For example, if this reader_task is
+	// of index 5 in the reader_tasks array, then result is for
+	// 6 cores.
+	u64 result_avg;
 };
 
 static struct task_struct *shutdown_task;
@@ -93,6 +90,7 @@ static wait_queue_head_t main_wq;
 static int shutdown_start;
 
 static struct reader_task *reader_tasks;
+static int nreaders;
 
 // Number of readers that are part of the current experiment.
 static atomic_t nreaders_exp;
@@ -107,20 +105,23 @@ static int exp_idx;
 struct ref_perf_ops {
 	void (*init)(void);
 	void (*cleanup)(void);
-	void (*readsection)(const int nloops);
+	int (*readlock)(void);
+	void (*readunlock)(int idx);
 	const char *name;
 };
 
 static struct ref_perf_ops *cur_ops;
 
-static void ref_rcu_read_section(const int nloops)
+// Definitions for RCU ref perf testing.
+static int ref_rcu_read_lock(void) __acquires(RCU)
 {
-	int i;
+	rcu_read_lock();
+	return 0;
+}
 
-	for (i = nloops; i >= 0; i--) {
-		rcu_read_lock();
-		rcu_read_unlock();
-	}
+static void ref_rcu_read_unlock(int idx) __releases(RCU)
+{
+	rcu_read_unlock();
 }
 
 static void rcu_sync_perf_init(void)
@@ -129,7 +130,8 @@ static void rcu_sync_perf_init(void)
 
 static struct ref_perf_ops rcu_ops = {
 	.init		= rcu_sync_perf_init,
-	.readsection	= ref_rcu_read_section,
+	.readlock	= ref_rcu_read_lock,
+	.readunlock	= ref_rcu_read_unlock,
 	.name		= "rcu"
 };
 
@@ -138,39 +140,42 @@ static struct ref_perf_ops rcu_ops = {
 DEFINE_STATIC_SRCU(srcu_refctl_perf);
 static struct srcu_struct *srcu_ctlp = &srcu_refctl_perf;
 
-static void srcu_ref_perf_read_section(int nloops)
+static int srcu_ref_perf_read_lock(void) __acquires(srcu_ctlp)
 {
-	int i;
-	int idx;
+	return srcu_read_lock(srcu_ctlp);
+}
 
-	for (i = nloops; i >= 0; i--) {
-		idx = srcu_read_lock(srcu_ctlp);
-		srcu_read_unlock(srcu_ctlp, idx);
-	}
+static void srcu_ref_perf_read_unlock(int idx) __releases(srcu_ctlp)
+{
+	srcu_read_unlock(srcu_ctlp, idx);
 }
 
 static struct ref_perf_ops srcu_ops = {
 	.init		= rcu_sync_perf_init,
-	.readsection	= srcu_ref_perf_read_section,
+	.readlock	= srcu_ref_perf_read_lock,
+	.readunlock	= srcu_ref_perf_read_unlock,
 	.name		= "srcu"
 };
 
 // Definitions for reference count
 static atomic_t refcnt;
 
-static void ref_perf_refcnt_section(const int nloops)
+static int srcu_ref_perf_refcnt_lock(void)
 {
-	int i;
+	atomic_inc(&refcnt);
+	return 0;
+}
 
-	for (i = nloops; i >= 0; i--) {
-		atomic_inc(&refcnt);
-		atomic_dec(&refcnt);
-	}
+static void srcu_ref_perf_refcnt_unlock(int idx) __releases(srcu_ctlp)
+{
+	atomic_dec(&refcnt);
+	srcu_read_unlock(srcu_ctlp, idx);
 }
 
 static struct ref_perf_ops refcnt_ops = {
 	.init		= rcu_sync_perf_init,
-	.readsection	= ref_perf_refcnt_section,
+	.readlock	= srcu_ref_perf_refcnt_lock,
+	.readunlock	= srcu_ref_perf_refcnt_unlock,
 	.name		= "refcnt"
 };
 
@@ -182,19 +187,21 @@ static void ref_perf_rwlock_init(void)
 	rwlock_init(&test_rwlock);
 }
 
-static void ref_perf_rwlock_section(const int nloops)
+static int ref_perf_rwlock_lock(void)
 {
-	int i;
+	read_lock(&test_rwlock);
+	return 0;
+}
 
-	for (i = nloops; i >= 0; i--) {
-		read_lock(&test_rwlock);
-		read_unlock(&test_rwlock);
-	}
+static void ref_perf_rwlock_unlock(int idx)
+{
+	read_unlock(&test_rwlock);
 }
 
 static struct ref_perf_ops rwlock_ops = {
 	.init		= ref_perf_rwlock_init,
-	.readsection	= ref_perf_rwlock_section,
+	.readlock	= ref_perf_rwlock_lock,
+	.readunlock	= ref_perf_rwlock_unlock,
 	.name		= "rwlock"
 };
 
@@ -206,19 +213,21 @@ static void ref_perf_rwsem_init(void)
 	init_rwsem(&test_rwsem);
 }
 
-static void ref_perf_rwsem_section(const int nloops)
+static int ref_perf_rwsem_lock(void)
 {
-	int i;
+	down_read(&test_rwsem);
+	return 0;
+}
 
-	for (i = nloops; i >= 0; i--) {
-		down_read(&test_rwsem);
-		up_read(&test_rwsem);
-	}
+static void ref_perf_rwsem_unlock(int idx)
+{
+	up_read(&test_rwsem);
 }
 
 static struct ref_perf_ops rwsem_ops = {
 	.init		= ref_perf_rwsem_init,
-	.readsection	= ref_perf_rwsem_section,
+	.readlock	= ref_perf_rwsem_lock,
+	.readunlock	= ref_perf_rwsem_unlock,
 	.name		= "rwsem"
 };
 
@@ -230,6 +239,8 @@ ref_perf_reader(void *arg)
 	unsigned long flags;
 	long me = (long)arg;
 	struct reader_task *rt = &(reader_tasks[me]);
+	unsigned long spincnt;
+	int idx;
 	u64 start;
 	s64 duration;
 
@@ -237,8 +248,6 @@ ref_perf_reader(void *arg)
 	set_cpus_allowed_ptr(current, cpumask_of(me % nr_cpu_ids));
 	set_user_nice(current, MAX_NICE);
 	atomic_inc(&n_init);
-	if (holdoff)
-		schedule_timeout_interruptible(holdoff * HZ);
 repeat:
 	VERBOSE_PERFOUT("ref_perf_reader %ld: waiting to start next experiment on cpu %d", me, smp_processor_id());
 
@@ -261,7 +270,10 @@ repeat:
 
 	VERBOSE_PERFOUT("ref_perf_reader %ld: experiment %d started", me, exp_idx);
 
-	cur_ops->readsection(loops);
+	for (spincnt = 0; spincnt < loops; spincnt++) {
+		idx = cur_ops->readlock();
+		cur_ops->readunlock(idx);
+	}
 
 	duration = ktime_get_mono_fast_ns() - start;
 	local_irq_restore(flags);
@@ -283,12 +295,12 @@ end:
 	return 0;
 }
 
-static void reset_readers(void)
+void reset_readers(int n)
 {
 	int i;
 	struct reader_task *rt;
 
-	for (i = 0; i < nreaders; i++) {
+	for (i = 0; i < n; i++) {
 		rt = &(reader_tasks[i]);
 
 		rt->last_duration_ns = 0;
@@ -296,22 +308,19 @@ static void reset_readers(void)
 }
 
 // Print the results of each reader and return the sum of all their durations.
-static u64 process_durations(int n)
+u64 process_durations(int n)
 {
 	int i;
 	struct reader_task *rt;
 	char buf1[64];
-	char *buf;
+	char buf[512];
 	u64 sum = 0;
 
-	buf = kmalloc(128 + nreaders * 32, GFP_KERNEL);
-	if (!buf)
-		return 0;
 	buf[0] = 0;
 	sprintf(buf, "Experiment #%d (Format: <THREAD-NUM>:<Total loop time in ns>)",
 		exp_idx);
 
-	for (i = 0; i < n && !torture_must_stop(); i++) {
+	for (i = 0; i <= n && !torture_must_stop(); i++) {
 		rt = &(reader_tasks[i]);
 		sprintf(buf1, "%d: %llu\t", i, rt->last_duration_ns);
 
@@ -325,7 +334,6 @@ static u64 process_durations(int n)
 
 	PERFOUT("%s\n", buf);
 
-	kfree(buf);
 	return sum;
 }
 
@@ -337,48 +345,36 @@ static u64 process_durations(int n)
 // point all the timestamps are printed.
 static int main_func(void *arg)
 {
-	bool errexit = false;
 	int exp, r;
 	char buf1[64];
-	char *buf;
-	u64 *result_avg;
+	char buf[512];
 
 	set_cpus_allowed_ptr(current, cpumask_of(nreaders % nr_cpu_ids));
 	set_user_nice(current, MAX_NICE);
 
 	VERBOSE_PERFOUT("main_func task started");
-	result_avg = kzalloc(nruns * sizeof(*result_avg), GFP_KERNEL);
-	buf = kzalloc(64 + nruns * 32, GFP_KERNEL);
-	if (!result_avg || !buf) {
-		VERBOSE_PERFOUT_ERRSTRING("out of memory");
-		errexit = true;
-	}
 	atomic_inc(&n_init);
 
 	// Wait for all threads to start.
 	wait_event(main_wq, atomic_read(&n_init) == (nreaders + 1));
-	if (holdoff)
-		schedule_timeout_interruptible(holdoff * HZ);
 
 	// Start exp readers up per experiment
-	for (exp = 0; exp < nruns && !torture_must_stop(); exp++) {
-		if (errexit)
-			break;
+	for (exp = 0; exp < nreaders && !torture_must_stop(); exp++) {
 		if (torture_must_stop())
 			goto end;
 
-		reset_readers();
-		atomic_set(&nreaders_exp, nreaders);
+		reset_readers(exp);
+		atomic_set(&nreaders_exp, exp + 1);
 
 		exp_idx = exp;
 
-		for (r = 0; r < nreaders; r++) {
+		for (r = 0; r <= exp; r++) {
 			atomic_set(&reader_tasks[r].start, 1);
 			wake_up(&reader_tasks[r].wq);
 		}
 
 		VERBOSE_PERFOUT("main_func: experiment started, waiting for %d readers",
-				nreaders);
+				exp);
 
 		wait_event(main_wq,
 			   !atomic_read(&nreaders_exp) || torture_must_stop());
@@ -388,7 +384,7 @@ static int main_func(void *arg)
 		if (torture_must_stop())
 			goto end;
 
-		result_avg[exp] = 1000 * process_durations(nreaders) / (nreaders * loops);
+		reader_tasks[exp].result_avg = process_durations(exp) / ((exp + 1) * loops);
 	}
 
 	// Print the average of all experiments
@@ -398,15 +394,12 @@ static int main_func(void *arg)
 	strcat(buf, "\n");
 	strcat(buf, "Threads\tTime(ns)\n");
 
-	for (exp = 0; exp < nruns; exp++) {
-		if (errexit)
-			break;
-		sprintf(buf1, "%d\t%llu.%03d\n", exp + 1, result_avg[exp] / 1000, (int)(result_avg[exp] % 1000));
+	for (exp = 0; exp < nreaders; exp++) {
+		sprintf(buf1, "%d\t%llu\n", exp + 1, reader_tasks[exp].result_avg);
 		strcat(buf, buf1);
 	}
 
-	if (!errexit)
-		PERFOUT("%s", buf);
+	PERFOUT("%s", buf);
 
 	// This will shutdown everything including us.
 	if (shutdown) {
@@ -420,8 +413,6 @@ static int main_func(void *arg)
 
 end:
 	torture_kthread_stopping("main_func");
-	kfree(result_avg);
-	kfree(buf);
 	return 0;
 }
 
@@ -429,8 +420,8 @@ static void
 ref_perf_print_module_parms(struct ref_perf_ops *cur_ops, const char *tag)
 {
 	pr_alert("%s" PERF_FLAG
-		 "--- %s:  verbose=%d shutdown=%d holdoff=%d loops=%ld nreaders=%d nruns=%d\n", perf_type, tag,
-		 verbose, shutdown, holdoff, loops, nreaders, nruns);
+		 "--- %s:  verbose=%d shutdown=%d loops=%ld\n", perf_type, tag,
+		 verbose, shutdown, loops);
 }
 
 static void
@@ -519,9 +510,8 @@ ref_perf_init(void)
 		schedule_timeout_uninterruptible(1);
 	}
 
-	// Reader tasks (default to ~75% of online CPUs).
-	if (nreaders < 0)
-		nreaders = (num_online_cpus() >> 1) + (num_online_cpus() >> 2);
+	// Reader tasks (~75% of online CPUs).
+	nreaders = (num_online_cpus() >> 1) + (num_online_cpus() >> 2);
 	reader_tasks = kcalloc(nreaders, sizeof(reader_tasks[0]),
 			       GFP_KERNEL);
 	if (!reader_tasks) {
