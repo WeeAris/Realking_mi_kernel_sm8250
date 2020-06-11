@@ -146,6 +146,9 @@ static FORCE_INLINE int LZ4_decompress_generic(
 		 * some compilers can produce better parallelized runtime code
 
 
+
+
+
 		 */
 		if ((endOnInput ? length != RUN_MASK : length <= 8)
 		   /*
