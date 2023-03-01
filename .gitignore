@@ -145,11 +145,7 @@ scripts/build_dtbo
 scripts/build_kernel
 scripts/update_defconfig
 
-# Nexus
-clang/
-clangB/
-gcc/
-gcc32/
+# Trash
 out/
-ids.txt
-error.log
+*.zip
+*.log
