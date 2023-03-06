@@ -1,289 +1,173 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2199
+# shellcheck source=/dev/null
+#
+# Copyright (C) 2020-22 UtsavBalar1231 <utsavbalar1231@gmail.com>
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#    http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
- #
- # Script For Building Android Kernel
- #
+curl -LSs "https://raw.githubusercontent.com/tiann/KernelSU/main/kernel/setup.sh" | bash -
 
-# Specify Kernel Directory
-KERNEL_DIR="$(pwd)"
+KBUILD_COMPILER_STRING=$($HOME/tc/clang/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')
+KBUILD_LINKER_STRING=$($HOME/tc/clang/bin/ld.lld --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//' | sed 's/(compatible with [^)]*)//')
+export KBUILD_COMPILER_STRING
+export KBUILD_LINKER_STRING
 
-BUILD=$1
+#
+# Enviromental Variables
+#
 
-if [ "$BUILD" = "local" ]; then
-	if [ -e ids.txt ]; then
-		chat_id=$(awk "NR==1{print;exit}" ids.txt)
-		token=$(awk "NR==2{print;exit}" ids.txt)
-	else
-		echo "Type ur chat id:"
-		read chat
-		echo "$chat" > ids.txt
-		chat_id=$chat
-		echo "Type ur bot token:"
-		read token
-		echo "$token" >> ids.txt
-		token=$token
-	fi
-fi
+DATE=$(date '+%Y%m%d-%H%M')
+DEVICE="$1"
 
-DEVICE=$2
-
-VERSION=BETA
-if [ "${DEVICE}" = "alioth" ]; then
-DEFCONFIG=alioth_defconfig
-MODEL="Poco F3"
-elif [ "${DEVICE}" = "lmi" ]; then
-DEFCONFIG=lmi_defconfig
-MODEL="Poco F2 Pro"
-elif [ "${DEVICE}" = "apollo" ]; then
-DEFCONFIG=apollo_defconfig
-MODEL="Mi 10T Pro"
-elif [ "${DEVICE}" = "munch" ]; then
-DEFCONFIG=munch_defconfig
-MODEL="Poco F4"
-fi
-
-# Files
-IMAGE=$(pwd)/out/arch/arm64/boot/Image
-DTBO=$(pwd)/out/arch/arm64/boot/dtbo.img
+# Set our directory
 OUT_DIR=out/
+
+if [[ "$2" == "aosp" ]]; then
+	VERSION="MiNaZuKi-${DEVICE^^}-AOSP-${DATE}"
+fi
+
+if [[ "$2" == "aospa" ]]; then
+	VERSION="MiNaZuKi-${DEVICE^^}-AOSPA-${DATE}"
+fi
+
+if [[ $2 == "" || $2 == "miui" ]]; then
+    VERSION="MiNaZuKi-${DEVICE^^}-MIUI-${DATE}"
+fi
+
+# Export Zip name
+export ZIPNAME="${VERSION}.zip"
+
+# How much kebabs we need? Kanged from @raphielscape :)
+if [[ -z "${KEBABS}" ]]; then
+    COUNT="$(grep -c '^processor' /proc/cpuinfo)"
+    export KEBABS="$((COUNT + 2))"
+fi
+
+echo "Jobs: ${KEBABS}"
+
+ARGS="ARCH=arm64 \
+O=${OUT_DIR} \
+LLVM=1 \
+CLANG_TRIPLE=aarch64-linux-gnu- \
+CROSS_COMPILE=aarch64-linux-gnu- \
+CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
+-j${KEBABS}"
+
 dts_source=arch/arm64/boot/dts/vendor/qcom
 
-# Verbose Build
-VERBOSE=0
-
-# Kernel Version
-KERVER=$(make kernelversion)
-
-COMMIT_HEAD=$(git log --oneline -1)
-
-# Date and Time
-DATE=$(TZ=Europe/Lisbon date +"%Y%m%d-%T")
-TM=$(date +"%F%S")
-
-# Specify Final Zip Name
-ZIPNAME=Nexus
-FINAL_ZIP=${ZIPNAME}-${VERSION}-${DEVICE}-RC1.0-KERNEL-AOSP-${TM}.zip
-
-# Specify compiler [ proton, nexus, aosp ]
-COMPILER=aosp
-
-# Clone ToolChain
-function cloneTC() {
-	
-	case $COMPILER in
-	
-		proton)
-			git clone --depth=1  https://github.com/kdrag0n/proton-clang.git clang
-			PATH="${KERNEL_DIR}/clang/bin:$PATH"
-			;;
-		
-		nexus)
-			git clone --depth=1  https://gitlab.com/Project-Nexus/nexus-clang.git clang
-			PATH="${KERNEL_DIR}/clang/bin:$PATH"
-			;;
-
-		neutron)
-			if [ ! -d clang ]; then
-			mkdir clang && cd clang
-			bash <(curl -s https://raw.githubusercontent.com/Neutron-Toolchains/antman/main/antman) -S
-			PATH="${KERNEL_DIR}/clang/bin:$PATH"
-			cd ..
-			else
-			echo "Neutron alreay cloned"
-			fi
-			;;
-
-		nex14)
-			git clone --depth=1  https://gitlab.com/Project-Nexus/nexus-clang.git -b nexus-14 clang
-			PATH="${KERNEL_DIR}/clang/bin:$PATH"
-			;;
-
-		aosp)
-			echo "* Checking if Aosp Clang is already cloned..."
-			if [ -d clangB ]; then
-	  		echo "××××××××××××××××××××××××××××"
-	  		echo "  Already Cloned Aosp Clang"
-	  		echo "××××××××××××××××××××××××××××"
-			else
-			export CLANG_VERSION="clang-r487747"
-			echo "* It's not cloned, cloning it..."
-        		mkdir clangB
-        		cd clangB || exit
-			wget -q https://android.googlesource.com/platform/prebuilts/clang/host/linux-x86/+archive/refs/heads/master/${CLANG_VERSION}.tgz
-        		tar -xf ${CLANG_VERSION}.tgz
-        		cd .. || exit
-			git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_aarch64_aarch64-linux-android-4.9.git --depth=1 gcc
-			git clone https://github.com/LineageOS/android_prebuilts_gcc_linux-x86_arm_arm-linux-androideabi-4.9.git  --depth=1 gcc32
-			fi
-			PATH="${KERNEL_DIR}/clangB/bin:${KERNEL_DIR}/gcc/bin:${KERNEL_DIR}/gcc32/bin:${PATH}"
-			;;
-
-		*)
-			echo "Compiler not defined"
-			;;
-	esac
-        # Clone AnyKernel
-        if [ -d AnyKernel3 ]; then
-		  rm -rf AnyKernel3
-		else
-		if [ "${DEVICE}" = "alioth" ]; then
-          git clone --depth=1 https://github.com/NotZeetaa/AnyKernel3 -b alioth AnyKernel3
-        elif [ "${DEVICE}" = "apollo" ]; then
-          git clone --depth=1 https://github.com/NotZeetaa/AnyKernel3 -b apollo AnyKernel3
-        elif [ "${DEVICE}" = "munch" ]; then
-          git clone --depth=1 https://github.com/NotZeetaa/AnyKernel3 -b munch AnyKernel3
-		else
-		  git clone --depth=1 https://github.com/NotZeetaa/AnyKernel3 -b lmi AnyKernel3
-		fi
-		fi
-	}
-	
-# Export Variables
-function exports() {
-	
-        # Export KBUILD_COMPILER_STRING
-        if [ -d ${KERNEL_DIR}/clang ];
-           then
-               export KBUILD_COMPILER_STRING=$(${KERNEL_DIR}/clang/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')
-        elif [ -d ${KERNEL_DIR}/gcc64 ];
-           then
-               export KBUILD_COMPILER_STRING=$("$KERNEL_DIR/gcc64"/bin/aarch64-elf-gcc --version | head -n 1)
-        elif [ -d ${KERNEL_DIR}/clangB ];
-            then
-               export KBUILD_COMPILER_STRING=$(${KERNEL_DIR}/clangB/bin/clang --version | head -n 1 | perl -pe 's/\(http.*?\)//gs' | sed -e 's/  */ /g' -e 's/[[:space:]]*$//')
-        fi
-        
-        # Export ARCH and SUBARCH
-        export ARCH=arm64
-        export SUBARCH=arm64
-               
-        # KBUILD HOST and USER
-        export KBUILD_BUILD_HOST=ArchLinux
-        export KBUILD_BUILD_USER="NotZeeta"
-        
-        # CI
-        if [ "$CI" ]
-           then
-               
-           if [ "$CIRCLECI" ]
-              then
-                  export KBUILD_BUILD_VERSION=${CIRCLE_BUILD_NUM}
-                  export CI_BRANCH=${CIRCLE_BRANCH}
-           elif [ "$DRONE" ]
-	      then
-		  export KBUILD_BUILD_VERSION=${DRONE_BUILD_NUMBER}
-		  export CI_BRANCH=${DRONE_BRANCH}
-           fi
-		   
-        fi
-	export PROCS=$(nproc --all)
-	export DISTRO=$(source /etc/os-release && echo "${NAME}")
-	}
-
-# Telegram Bot Integration
-
-function post_msg() {
-	curl -s -X POST "https://api.telegram.org/bot$token/sendMessage" \
-	-d chat_id="$chat_id" \
-	-d "disable_web_page_preview=true" \
-	-d "parse_mode=html" \
-	-d text="$1"
-	}
-
-function push() {
-	curl -F document=@$1 "https://api.telegram.org/bot$token/sendDocument" \
-	-F chat_id="$chat_id" \
-	-F "disable_web_page_preview=true" \
-	-F "parse_mode=html" \
-	-F caption="$2"
-	}
-
-# Compilation
-
-METHOD=$3
-
-function compile() {
 START=$(date +"%s")
-	# Push Notification
-	post_msg "<b>$KBUILD_BUILD_VERSION CI Build Triggered</b>%0A<b>Docker OS: </b><code>$DISTRO</code>%0A<b>Kernel Version : </b><code>$KERVER</code>%0A<b>Date : </b><code>$(TZ=Europe/Lisbon date)</code>%0A<b>Device : </b><code>$MODEL [$DEVICE]</code>%0A<b>Pipeline Host : </b><code>$KBUILD_BUILD_HOST</code>%0A<b>Host Core Count : </b><code>$PROCS</code>%0A<b>Compiler Used : </b><code>$KBUILD_COMPILER_STRING</code>%0A<b>Branch : </b><code>$CI_BRANCH</code>%0A<b>Top Commit : </b><a href='$DRONE_COMMIT_LINK'>$COMMIT_HEAD</a>"
-	
-	# Compile
-	if [ -d ${KERNEL_DIR}/clang ];
-	   then
-           make O=out CC=clang ARCH=arm64 ${DEFCONFIG}
-		   if [ "$METHOD" = "lto" ]; then
-		     scripts/config --file ${OUT_DIR}/.config \
-             -e LTO_CLANG
-           fi
-	       make -kj$(nproc --all) O=out \
-	       ARCH=arm64 \
-	       LLVM=1 \
-	       LLVM_IAS=1 \
-	       CROSS_COMPILE=aarch64-linux-gnu- \
-	       CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
-	       V=$VERBOSE 2>&1 | tee error.log
-	elif [ -d ${KERNEL_DIR}/gcc64 ];
-	   then
-           make O=out ARCH=arm64 ${DEFCONFIG}
-	       make -kj$(nproc --all) O=out \
-	       ARCH=arm64 \
-	       CROSS_COMPILE_COMPAT=arm-eabi- \
-	       CROSS_COMPILE=aarch64-elf- \
-	       AR=llvm-ar \
-	       NM=llvm-nm \
-	       OBJCOPY=llvm-objcopy \
-	       OBJDUMP=llvm-objdump \
-	       STRIP=llvm-strip \
-	       OBJSIZE=llvm-size \
-	       V=$VERBOSE 2>&1 | tee error.log
-        elif [ -d ${KERNEL_DIR}/clangB ];
-           then
-           make O=out CC=clang ARCH=arm64 ${DEFCONFIG}
-		   if [ "$METHOD" = "lto" ]; then
-		     scripts/config --file ${OUT_DIR}/.config \
-             -e LTO_CLANG
-           fi
-           make -kj$(nproc --all) O=out \
-	       ARCH=arm64 \
-	       LLVM=1 \
-	       LLVM_IAS=1 \
-	       CLANG_TRIPLE=aarch64-linux-gnu- \
-	       CROSS_COMPILE=aarch64-linux-android- \
-	       CROSS_COMPILE_COMPAT=arm-linux-androideabi- \
-	       V=$VERBOSE 2>&1 | tee error.log
+
+# Set compiler Path
+export PATH="$HOME/tc/clang/bin:$PATH"
+export LD_LIBRARY_PATH=${HOME}/tc/clang/lib64:$LD_LIBRARY_PATH
+
+# Make defconfig
+make -j${KEBABS} ${ARGS} "${DEVICE}"_defconfig
+
+if [[ "$2" == "aosp" ]]; then
+	echo "------ Starting AOSP Build ------"
+fi
+if [[ "$2" == "aospa" ]]; then
+	echo "------ Starting AOSPA Build ------"
+fi
+
+if [[ $2 == "" || $2 == "miui" ]]; then
+	echo "------ Starting MIUI Build ------"
+fi
+
+# Make defconfig
+make -j${KEBABS} ${ARGS} "${DEVICE}"_defconfig
+
+if [[ "$2" =~ "aosp"* ]]; then
+scripts/config --file out/.config	\
+    -e LOCALVERSION_AUTO	\
+    -e TOUCHSCREEN_COMMON	\
+    --set-str STATIC_USERMODEHELPER_PATH /system/bin/micd	\
+    -d IPC_LOGGING	\
+    -d MIGT	\
+    -d MIHW	\
+    -d MILLET	\
+    -d MIGT_ENERGY_MODEL	\
+    -d MIUI_ZRAM_MEMORY_TRACKING	\
+    -d PACKAGE_RUNTIME_INFO	\
+    -d PERF_HUMANTASK	\
+    -d PERF_CRITICAL_RT_TASK	\
+    -d PERF_HELPER	\
+    -d RTMM	\
+    -d MI_FRAGMENTION	\
+    -d SF_BINDER	\
+    -d TASK_DELAY_ACCT
+
+    if [[ "$2" == "aospa" ]]; then
+	scripts/config --file out/.config	\
+	-d SDCARD_FS	\
+	-e UNICODE
+	sed -i "/FORTIFY_SOURCE/d" out/.config
+    fi
+
+    sed -i 's/<1546>/<155>/g' ${dts_source}/dsi-panel-l11r-38-08-0a-dsc-cmd.dtsi
+    sed -i 's/<695>/<70>/g' ${dts_source}/dsi-panel-l11r-38-08-0a-dsc-cmd.dtsi
+fi
+
+# Make olddefconfig
+cd ${OUT_DIR} || exit
+make -j${KEBABS} ${ARGS} CC="ccache clang" HOSTCC="ccache gcc" HOSTCXX="cache g++" olddefconfig
+cd ../ || exit
+
+make -j${KEBABS} ${ARGS} CC="ccache clang" HOSTCC="ccache gcc" HOSTCXX="ccache g++" 2>&1 | tee build.log
+
+if [[ "$2" =~ "aosp"* ]]; then
+	git checkout arch/arm64/boot/dts/vendor &>/dev/null
+fi
+
+if [[ "$2" =~ "aosp"* ]]; then
+	if [[ "$2" == "aospa" ]]; then
+		echo "------ Finishing AOSPA Build ------"
+	else
+		echo "------ Finishing AOSP Build ------"
 	fi
-	
-	# Verify Files
-	if ! [ -a "$IMAGE" ];
-	   then
-	       push "error.log" "Build Throws Errors"
-	       exit 1
-	   else
-	       post_msg " Kernel Compilation Finished. Started Zipping "
-		   find ${OUT_DIR}/$dts_source -name '*.dtb' -exec cat {} + >${OUT_DIR}/arch/arm64/boot/dtb
-		   DTB=$(pwd)/out/arch/arm64/boot/dtb
-	fi
-	}
+fi
 
-# Zipping
-function zipping() {
-	# Copy Files To AnyKernel3 Zip
-	mv $IMAGE AnyKernel3
-    mv $DTBO AnyKernel3
-    mv $DTB AnyKernel3
+if [[ "$2" == "" || "$2" == "miui" ]]; then
+	echo "------ Finishing MIUI Build ------"
+fi
 
-	# Zipping and Push Kernel
-	cd AnyKernel3 || exit 1
-        zip -r9 ${FINAL_ZIP} *
-        MD5CHECK=$(md5sum "$FINAL_ZIP" | cut -d' ' -f1)
-        push "$FINAL_ZIP" "Build took : $(($DIFF / 60)) minute(s) and $(($DIFF % 60)) second(s) | For <b>$MODEL ($DEVICE)</b> | <b>${KBUILD_COMPILER_STRING}</b> | <b>MD5 Checksum : </b><code>$MD5CHECK</code>"
-		cd ..
-        rm -rf AnyKernel3
-        }
+#remove KSU from source after compiling
+git checkout drivers/Makefile &>/dev/null
+rm -rf KernelSU
+rm -rf drivers/kernelsu
 
-cloneTC
-exports
-compile
+find out/${dts_source} -name '*.dtb' -exec cat {} + >out/arch/arm64/boot/dtb
+
 END=$(date +"%s")
-DIFF=$(($END - $START))
-zipping
+DIFF=$((END - START))
+zipname="$VERSION.zip"
+if [ -f "out/arch/arm64/boot/Image" ] && [ -f "out/arch/arm64/boot/dtbo.img" ] && [ -f "out/arch/arm64/boot/dtb" ]; then
+	git clone -q https://github.com/amackpro/AnyKernel3 -b $1
+	cp out/arch/arm64/boot/Image AnyKernel3
+	cp out/arch/arm64/boot/dtb AnyKernel3
+	cp out/arch/arm64/boot/dtbo.img AnyKernel3
+	rm -f *zip
+	cd AnyKernel3
+	sed -i "s/is_slot_device=0/is_slot_device=auto/g" anykernel.sh
+	zip -r9 "../${zipname}" * -x '*.git*' README.md *placeholder >> /dev/null
+	cd ..
+	rm -rf AnyKernel3
+	echo -e "\nCompleted in $((SECONDS / 60)) minute(s) and $((SECONDS % 60)) second(s) !"
+	echo ""
+	echo -e ${zipname} " is ready!"
+	echo ""
+else
+	echo -e "\n Compilation Failed!"
+fi
