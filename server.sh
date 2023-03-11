@@ -3,7 +3,7 @@
 ## Copy this script inside the kernel directory
 DIR=`readlink -f .`
 MAIN=`readlink -f ${DIR}/..`
-KERNEL_DEFCONFIG=alioth_defconfig
+KERNEL_DEFCONFIG=munch_defconfig
 export PATH="$MAIN/clang/bin:$PATH"
 export ARCH=arm64
 export SUBARCH=arm64
@@ -34,11 +34,10 @@ echo -e "***********************************************$nocol"
 make $KERNEL_DEFCONFIG O=out CC=clang
 make -j$(nproc --all) O=out \
                       ARCH=arm64 \
-                      CC=clang \
+                      LLVM=1 \
+                      CLANG_TRIPLE=aarch64-linux-gnu- \
                       CROSS_COMPILE=aarch64-linux-gnu- \
-                      NM=llvm-nm \
-                      OBJDUMP=llvm-objdump \
-                      STRIP=llvm-strip
+                      CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
 
 TIME="$(date "+%Y%m%d-%H%M%S")"
 mkdir -p tmp
@@ -50,6 +49,6 @@ cd tmp
 7za a -mx9 tmp.zip *
 cd ..
 rm *.zip
-cp -fp tmp/tmp.zip RealKing-Alioth-MiUi-$TIME.zip
+cp -fp tmp/tmp.zip RealKing-Munch-MiUi-$TIME.zip
 rm -rf tmp
 echo $TIME
