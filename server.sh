@@ -34,11 +34,10 @@ echo -e "***********************************************$nocol"
 make $KERNEL_DEFCONFIG O=out CC=clang
 make -j$(nproc --all) O=out \
                       ARCH=arm64 \
-                      CC=clang \
+                      LLVM=1 \
+                      CLANG_TRIPLE=aarch64-linux-gnu- \
                       CROSS_COMPILE=aarch64-linux-gnu- \
-                      NM=llvm-nm \
-                      OBJDUMP=llvm-objdump \
-                      STRIP=llvm-strip
+                      CROSS_COMPILE_COMPAT=arm-linux-gnueabi- \
 
 TIME="$(date "+%Y%m%d-%H%M%S")"
 mkdir -p tmp
